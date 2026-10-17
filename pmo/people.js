@@ -1,8 +1,10 @@
 // Pendencias por responsavel: escolha uma pessoa e veja tudo o que esta com ela, separado por urgencia,
 // com prazo, proxima acao, bloqueio, SLA, validacao e ha quanto tempo ninguem mexe. Clique abre a tarefa.
 // Usa so a API que ja existe (/meta e /tasks); nenhum numero e estimado.
+// Roda dentro do Command Center (ctx.embedded = true, rota command-center?person=<id>): ai o filtro tem
+// "Todos", que volta para a visao do portfolio.
 import { api, meta } from '../api.js';
-import { h, clear, kpi, panel, statusBadge, prioBadge, companyDot, empty, badge, bar, todayKey, AREA_SHORT, SLA_STATE, VALIDATION } from '../ui.js';
+import { h, clear, append, kpi, panel, statusBadge, prioBadge, companyDot, empty, badge, bar, todayKey, AREA_SHORT, SLA_STATE, VALIDATION } from '../ui.js';
 import { onTaskChanged } from '../task-drawer.js';
 import { GROUPS, NO_OWNER, STALE_DAYS, SOON_DAYS, groupTasks, ownerKey, summarize, workload, dueText, staleDays, pickPerson, dias } from './people-model.js';
 
@@ -10,11 +12,15 @@ export async function render(root, ctx) {
   const { scope, openTask, params, navigate, onUnmount } = ctx;
   const m = await meta();
   let person = params.person || null;
+  const route = ctx.embedded ? 'command-center' : 'people';
+  const goPerson = (key) => navigate(route, key ? { person: key } : {});
   const select = h('select', { 'aria-label': 'Responsável', style: { fontWeight: 600, minWidth: '240px' } });
-  select.addEventListener('change', () => navigate('people', { person: select.value }));
+  select.addEventListener('change', () => goPerson(select.value));
   const listLink = h('a', { class: 'btn' }, 'Abrir na lista de tarefas');
   const head = h('div', { class: 'page-head' },
-    h('div', {}, h('h1', {}, 'Pendências por responsável'), h('p', {}, 'Escolha uma pessoa e veja tudo o que está com ela, do mais urgente para o menos. Clique numa tarefa para abrir, comentar ou mudar o status. Os números vêm das tarefas registradas, nada é estimado.')),
+    ctx.embedded
+      ? h('div', {}, h('h1', {}, 'Command Center'), h('p', {}, 'Filtrado por responsável: tudo o que está com a pessoa, do mais urgente para o menos. Escolha "Todos" no filtro para voltar à visão do portfólio. Os números vêm das tarefas registradas, nada é estimado.'))
+      : h('div', {}, h('h1', {}, 'Pendências por responsável'), h('p', {}, 'Escolha uma pessoa e veja tudo o que está com ela, do mais urgente para o menos. Clique numa tarefa para abrir, comentar ou mudar o status. Os números vêm das tarefas registradas, nada é estimado.')),
     h('div', { class: 'actions' }, listLink));
   const bodyEl = h('div');
   root.append(head, h('div', { class: 'filters' }, h('b', { style: { fontSize: '13px' } }, 'Responsável'), select), bodyEl);
@@ -25,8 +31,8 @@ export async function render(root, ctx) {
     const tasks = r.tasks;
     const rows = workload(tasks, m.people.filter((p) => p.active !== false), today);
     person = pickPerson(rows, person, m.user.person_id);
-    clear(select).append(rows.map((w) => h('option', { value: w.key, selected: w.key === person ? true : null },
-      `${w.name} · ${w.open} ${w.open === 1 ? 'aberta' : 'abertas'}${w.overdue ? `, ${w.overdue} ${w.overdue === 1 ? 'atrasada' : 'atrasadas'}` : ''}`)));
+    append(clear(select), [ctx.embedded ? h('option', { value: '' }, 'Todos (visão do portfólio)') : null, rows.map((w) => h('option', { value: w.key, selected: w.key === person ? true : null },
+      `${w.name} · ${w.open} ${w.open === 1 ? 'aberta' : 'abertas'}${w.overdue ? `, ${w.overdue} ${w.overdue === 1 ? 'atrasada' : 'atrasadas'}` : ''}`))]);
     listLink.href = `#/tasks?assignee=${person ?? ''}&open=1`;
     draw(rows, tasks.filter((t) => ownerKey(t) === person), today);
   }
@@ -71,7 +77,7 @@ export async function render(root, ctx) {
     // Carga de todos, para comparar e trocar de pessoa com um clique
     const max = Math.max(1, ...rows.map((w) => w.open));
     bodyEl.append(panel('Carga da equipe', h('ul', { class: 'list' }, rows.filter((w) => w.open > 0).map((w) => h('li', {
-      class: 'clickable', onClick: () => navigate('people', { person: w.key }),
+      class: 'clickable', onClick: () => goPerson(w.key),
       style: w.key === person ? { background: 'var(--blue-soft)' } : null,
     },
     h('div', { class: 't' },
