@@ -4,16 +4,22 @@
 // Roda dentro do Command Center (ctx.embedded = true, rota command-center?person=<id>): ai o filtro tem
 // "Todos", que volta para a visao do portfolio.
 import { api, meta } from '../api.js';
-import { h, clear, append, kpi, panel, statusBadge, prioBadge, companyDot, empty, badge, bar, todayKey, AREA_SHORT, SLA_STATE, VALIDATION } from '../ui.js';
+import { h, clear, append, kpi, panel, statusBadge, prioBadge, companyDot, empty, badge, bar, todayKey, debounce, AREA_SHORT, SLA_STATE, VALIDATION, STATUS, PRIORITY, COMPANY_SHORT } from '../ui.js';
 import { onTaskChanged } from '../task-drawer.js';
-import { GROUPS, NO_OWNER, STALE_DAYS, SOON_DAYS, groupTasks, ownerKey, summarize, workload, dueText, staleDays, pickPerson, dias } from './people-model.js';
+import { GROUPS, NO_OWNER, STALE_DAYS, SOON_DAYS, FILTER_KEYS, DUE_FILTERS, groupTasks, ownerKey, summarize, workload, dueText, staleDays, pickPerson, dias, applyFilters, filterOptions, activeFilterCount } from './people-model.js';
 
 export async function render(root, ctx) {
   const { scope, openTask, params, navigate, onUnmount } = ctx;
   const m = await meta();
   let person = params.person || null;
   const route = ctx.embedded ? 'command-center' : 'people';
-  const goPerson = (key) => navigate(route, key ? { person: key } : {});
+  // Filtros extras: ficam na URL (#/command-center?person=..&area=..) para dar para mandar o link filtrado.
+  const f = Object.fromEntries(FILTER_KEYS.map((k) => [k, params[k] || '']));
+  const goPerson = (key) => navigate(route, key ? { person: key, ...f } : {});
+  const syncUrl = () => { const q = new URLSearchParams(Object.entries({ person, ...f }).filter(([, v]) => v)).toString(); history.replaceState(null, '', `#/${route}${q ? '?' + q : ''}`); };
+  const filtersEl = h('div', { class: 'filters', style: { flexWrap: 'wrap' } });
+  let allTasks = [];
+  let lastToday = null;
   const select = h('select', { 'aria-label': 'Responsável', style: { fontWeight: 600, minWidth: '240px' } });
   select.addEventListener('change', () => goPerson(select.value));
   const listLink = h('a', { class: 'btn' }, 'Abrir na lista de tarefas');
@@ -23,18 +29,69 @@ export async function render(root, ctx) {
       : h('div', {}, h('h1', {}, 'Pendências por responsável'), h('p', {}, 'Escolha uma pessoa e veja tudo o que está com ela, do mais urgente para o menos. Clique numa tarefa para abrir, comentar ou mudar o status. Os números vêm das tarefas registradas, nada é estimado.')),
     h('div', { class: 'actions' }, listLink));
   const bodyEl = h('div');
-  root.append(head, h('div', { class: 'filters' }, h('b', { style: { fontSize: '13px' } }, 'Responsável'), select), bodyEl);
+  root.append(head, h('div', { class: 'filters' }, h('b', { style: { fontSize: '13px' } }, 'Responsável'), select), filtersEl, bodyEl);
 
   async function load() {
     const today = todayKey();
     const r = await api.get(`/tasks${api.qs({ open: '1', company: scope })}`);
-    const tasks = r.tasks;
+    allTasks = r.tasks;
+    lastToday = today;
+    redraw(true);
+  }
+
+  // Refaz a tela com os filtros atuais, sem buscar de novo no servidor.
+  function redraw(rebuildFilters = false) {
+    const today = lastToday;
+    const tasks = applyFilters(allTasks, f, today);
     const rows = workload(tasks, m.people.filter((p) => p.active !== false), today);
     person = pickPerson(rows, person, m.user.person_id);
     append(clear(select), [ctx.embedded ? h('option', { value: '' }, 'Todos (visão do portfólio)') : null, rows.map((w) => h('option', { value: w.key, selected: w.key === person ? true : null },
       `${w.name} · ${w.open} ${w.open === 1 ? 'aberta' : 'abertas'}${w.overdue ? `, ${w.overdue} ${w.overdue === 1 ? 'atrasada' : 'atrasadas'}` : ''}`))]);
     listLink.href = `#/tasks?assignee=${person ?? ''}&open=1`;
+    if (rebuildFilters) drawFilters();
+    else markFilters();
+    syncUrl();
     draw(rows, tasks.filter((t) => ownerKey(t) === person), today);
+  }
+
+  function drawFilters() {
+    // as opcoes vem das tarefas abertas da pessoa (sem filtro); se ela nao tem nenhuma, das de todos
+    const theirs = allTasks.filter((t) => ownerKey(t) === person);
+    const o = filterOptions(theirs.length ? theirs : allTasks);
+    const sel = (key, label, items, name) => {
+      if (!items.length && !f[key]) return null;
+      const s = h('select', { 'aria-label': label, dataset: { f: key } }, h('option', { value: '' }, label),
+        items.map((it) => h('option', { value: it.value, selected: f[key] === it.value ? true : null }, `${name(it.value)} (${it.n})`)),
+        f[key] && !items.some((it) => it.value === f[key]) ? h('option', { value: f[key], selected: true }, name(f[key])) : null);
+      s.addEventListener('change', () => { f[key] = s.value; redraw(); });
+      return s;
+    };
+    const dueSel = h('select', { 'aria-label': 'Prazo', dataset: { f: 'due' } }, h('option', { value: '' }, 'Prazo'),
+      Object.entries(DUE_FILTERS).map(([k, l]) => h('option', { value: k, selected: f.due === k ? true : null }, l)));
+    dueSel.addEventListener('change', () => { f.due = dueSel.value; redraw(); });
+    const q = h('input', { type: 'search', placeholder: 'Buscar tema, código, palavra…', value: f.q, 'aria-label': 'Buscar', dataset: { f: 'q' }, style: { minWidth: '200px' } });
+    q.addEventListener('input', debounce(() => { f.q = q.value.trim(); redraw(); }, 250));
+    const clearBtn = h('button', { class: 'btn sm ghost', dataset: { clear: '1' }, onClick: () => { for (const k of FILTER_KEYS) f[k] = ''; drawFilters(); redraw(); } }, 'Limpar filtros');
+    append(clear(filtersEl), [
+      h('b', { style: { fontSize: '13px' } }, 'Filtrar'),
+      sel('area', 'Área', o.area, (v) => AREA_SHORT[v] || v),
+      sel('company', 'Empresa', o.company, (v) => COMPANY_SHORT[v] || v),
+      sel('project', 'Projeto', o.project, (v) => v),
+      sel('priority', 'Prioridade', o.priority, (v) => PRIORITY[v]?.[0] || v),
+      sel('status', 'Etapa', o.status, (v) => STATUS[v]?.[0] || v),
+      dueSel,
+      sel('tag', 'Tag', o.tag, (v) => `#${v}`),
+      q, clearBtn,
+    ]);
+    markFilters();
+  }
+
+  // destaca os filtros em uso e mostra o "Limpar" so quando ha algum
+  function markFilters() {
+    for (const el of filtersEl.querySelectorAll('[data-f]')) { const on = Boolean(f[el.dataset.f]); el.style.borderColor = on ? 'var(--blue)' : ''; el.style.fontWeight = on ? '600' : ''; }
+    const n = activeFilterCount(f);
+    const b = filtersEl.querySelector('[data-clear]');
+    if (b) { b.style.display = n ? '' : 'none'; b.textContent = `Limpar filtros (${n})`; }
   }
 
   function draw(rows, mine, today) {
@@ -44,7 +101,7 @@ export async function render(root, ctx) {
     const s = summarize(mine, today);
 
     // Quem e e o resumo em uma frase
-    const resumo = [`${s.open} ${s.open === 1 ? 'pendência aberta' : 'pendências abertas'}`];
+    const resumo = [`${s.open} ${s.open === 1 ? 'pendência aberta' : 'pendências abertas'}${activeFilterCount(f) ? ' com os filtros escolhidos' : ''}`];
     if (s.overdue) resumo.push(`${s.overdue} ${s.overdue === 1 ? 'atrasada' : 'atrasadas'} (maior atraso: ${dias(s.maxLate)})`);
     if (s.oldestDays != null) resumo.push(`a mais antiga foi aberta há ${dias(s.oldestDays)}`);
     bodyEl.append(h('div', { class: 'row', style: { gap: '12px', margin: '4px 0 14px' } },
@@ -64,7 +121,10 @@ export async function render(root, ctx) {
       kpi(s.noDue, 'Sem prazo', { tone: s.noDue ? 'amber' : '' }),
     ));
 
-    if (!mine.length) bodyEl.append(empty(`${me.name} não tem pendências abertas`, 'Nada atrasado, bloqueado ou a iniciar neste escopo.'));
+    const nf = activeFilterCount(f);
+    if (!mine.length) bodyEl.append(nf
+      ? empty(`Nenhuma pendência de ${me.name} com esses filtros`, h('div', {}, h('button', { class: 'btn sm', style: { marginTop: '8px' }, onClick: () => { for (const k of FILTER_KEYS) f[k] = ''; drawFilters(); redraw(); } }, 'Limpar filtros')))
+      : empty(`${me.name} não tem pendências abertas`, 'Nada atrasado, bloqueado ou a iniciar neste escopo.'));
     const groups = groupTasks(mine, today);
     for (const [k, label, tone] of GROUPS) {
       const items = groups[k];
@@ -76,7 +136,7 @@ export async function render(root, ctx) {
 
     // Carga de todos, para comparar e trocar de pessoa com um clique
     const max = Math.max(1, ...rows.map((w) => w.open));
-    bodyEl.append(panel('Carga da equipe', h('ul', { class: 'list' }, rows.filter((w) => w.open > 0).map((w) => h('li', {
+    bodyEl.append(panel(activeFilterCount(f) ? 'Carga da equipe (com os filtros)' : 'Carga da equipe', h('ul', { class: 'list' }, rows.filter((w) => w.open > 0).map((w) => h('li', {
       class: 'clickable', onClick: () => goPerson(w.key),
       style: w.key === person ? { background: 'var(--blue-soft)' } : null,
     },

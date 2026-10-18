@@ -124,3 +124,66 @@ export function pickPerson(rows, requested, mine) {
   if (has(mine)) return String(mine);
   return rows.find((r) => r.open > 0)?.key ?? rows[0]?.key ?? null;
 }
+
+// ---------- Filtros extras (area, empresa, projeto, prioridade, etapa, prazo, tag e busca) ----------
+// Todos combinam (E). Valor vazio = sem filtro. Os nomes viram parametros da URL do Command Center.
+export const FILTER_KEYS = ['area', 'company', 'project', 'priority', 'status', 'due', 'tag', 'q'];
+export const DUE_FILTERS = {
+  overdue: 'Atrasadas',
+  today: 'Vencem hoje',
+  week: `Vencem em até ${SOON_DAYS} dias`,
+  month: 'Vencem em até 30 dias',
+  later: 'Prazo depois de 30 dias',
+  agreed: 'Só prazo acordado',
+  none: 'Sem prazo',
+};
+
+function norm(s) { return String(s ?? '').normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase(); }
+function tagsOf(t) { return Array.isArray(t.tags) ? t.tags.map(String) : String(t.tags || '').split(',').map((x) => x.trim()).filter(Boolean); }
+
+export function matchesDue(t, due, today) {
+  if (!due) return true;
+  if (due === 'none') return !t.due_date;
+  if (!t.due_date) return false;
+  if (due === 'agreed') return t.due_kind === 'acordado';
+  if (due === 'overdue') return isOverdue(t, today);
+  const d = daysBetween(today, t.due_date);
+  if (isOverdue(t, today) || d < 0) return false;
+  if (due === 'today') return d === 0;
+  if (due === 'week') return d <= SOON_DAYS;
+  if (due === 'month') return d <= 30;
+  if (due === 'later') return d > 30;
+  return true;
+}
+
+export function matchesFilters(t, f = {}, today) {
+  if (f.area && t.area !== f.area) return false;
+  if (f.company && t.company_slug !== f.company) return false;
+  if (f.project && (t.project_name || '') !== f.project) return false;
+  if (f.priority && t.priority !== f.priority) return false;
+  if (f.status && t.status !== f.status) return false;
+  if (f.tag && !tagsOf(t).includes(f.tag)) return false;
+  if (!matchesDue(t, f.due, today)) return false;
+  if (f.q) {
+    const hay = norm([t.code, t.title, t.next_action, t.blockers, t.project_name, t.epic_name, t.milestone_name, t.description, ...tagsOf(t)].join(' '));
+    if (!norm(f.q).trim().split(/\s+/).every((w) => hay.includes(w))) return false;
+  }
+  return true;
+}
+
+export const applyFilters = (tasks, f, today) => tasks.filter((t) => matchesFilters(t, f, today));
+export const activeFilterCount = (f = {}) => FILTER_KEYS.filter((k) => f[k]).length;
+
+/** Valores que existem nas tarefas, para montar as listas dos filtros (com quantas tarefas cada um tem). */
+export function filterOptions(tasks) {
+  const count = (get) => {
+    const m = new Map();
+    for (const t of tasks) for (const v of [].concat(get(t))) if (v) m.set(v, (m.get(v) || 0) + 1);
+    return [...m.entries()].sort((a, b) => String(a[0]).localeCompare(String(b[0]), 'pt-BR')).map(([value, n]) => ({ value, n }));
+  };
+  return {
+    area: count((t) => t.area), company: count((t) => t.company_slug), project: count((t) => t.project_name),
+    priority: count((t) => t.priority).sort((a, b) => (PRIO[a.value] ?? 9) - (PRIO[b.value] ?? 9)),
+    status: count((t) => t.status), tag: count(tagsOf),
+  };
+}

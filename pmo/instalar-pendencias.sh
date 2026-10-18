@@ -101,12 +101,13 @@ fi
 say "3/4 Conferindo no site"
 ok=1
 curl -fsS "$SITE/js/views/command-center.js?v=$STAMP" 2>/dev/null | grep -q "function personFilter" && echo "filtro no Command Center: no ar" || { echo "filtro no Command Center: o site ainda nao mostra"; ok=0; }
-curl -fsS "$SITE/js/views/people.js?v=$STAMP" 2>/dev/null | grep -q "ctx.embedded" && echo "visao por pessoa: no ar" || { echo "visao por pessoa: o site ainda nao mostra"; ok=0; }
+curl -fsS "$SITE/js/views/people.js?v=$STAMP" 2>/dev/null | grep -q "drawFilters" && echo "visao por pessoa com filtros: no ar" || { echo "visao por pessoa com filtros: o site ainda nao mostra"; ok=0; }
 curl -fsS "$SITE/js/app.js?v=$STAMP" 2>/dev/null | grep -q "views/people.js" && { echo "menu: o item antigo ainda aparece"; ok=0; } || echo "menu: sem o item duplicado"
 
 say "4/4 Resultado"
 if [ "$ok" -eq 1 ]; then
-  echo "PRONTO. Abra $SITE, recarregue a pagina (Ctrl+F5) e use o filtro 'Responsavel' no topo do Command Center."
+  echo "PRONTO. Abra $SITE e use o filtro 'Responsavel' no topo do Command Center."
+  echo "Se a tela nao mudar, limpe o cache do navegador (Ctrl+Shift+Delete > Imagens e arquivos em cache) ou abra numa janela anonima."
 else
   echo "Os arquivos foram instalados em $found lugar(es), mas o site ainda nao mostra tudo."
   echo "Pode ser que o PMO precise reiniciar ou ser publicado de novo. Copie tudo acima e mande para o Claude."
